@@ -431,6 +431,10 @@ details.past .pitem{display:flex;justify-content:space-between;gap:10px;padding:
 .migbanner .mb1{font-size:19px;font-weight:800;color:#0f7a45}
 .migbanner .mb2{font-size:15px;color:#41654f;line-height:1.7;margin:6px 0 12px}
 .migbanner .mb2 b{font-size:17px;color:#1f3a2a}
+.urlinput{font-size:13px;letter-spacing:0;word-break:break-all}
+.urlline{display:block;word-break:break-all;font-size:12px;font-weight:700;color:#2c5c41;background:#f3f8f4;border-radius:8px;padding:6px 8px;margin-top:4px}
+.urllabel{font-size:13px;font-weight:800;color:#0f7a45}
+.connbanner{background:#fff5f5;border:2px solid #e0a3a3;border-radius:14px;padding:14px;margin:0 0 14px;text-align:center;font-size:15px;font-weight:700;color:#8a2b2b}
 </style>
 </head>
 <body>
@@ -633,6 +637,7 @@ function loadState(){
     return true;
   }).catch(function(){
     MODE = "local";
+    CONN_ERR = true;
     state = normalizeState(localRead());
     return false;
   });
@@ -922,6 +927,10 @@ function renderHome(){
   var key = currentMonthKey();
   var evs = monthEvents(key);
   var html = "";
+  if(CONN_ERR && API_BASE){
+    html += '<div class="connbanner">保存先につながりませんでした。URLをご確認ください。<br>'+
+      '<button class="qbtn" style="margin-top:8px" data-act="setup">保存先の設定</button></div>';
+  }
   if(MODE === "server" && !state.members.length){
     var loc = localSnapshot();
     html += '<div class="migbanner">'+
@@ -1328,10 +1337,13 @@ function beginMigrate(){
 
 /* ---------- 保存先の設定（最初の1回だけ） ---------- */
 var LAST_DIAG = null;
+var SETUP_URL = "";      /* 入力された完全なURL（画面を描き直しても消しません） */
+var LAST_OK_URL = "";    /* 接続確認に成功した完全なURL */
 function apiTestBox(html){ var b=document.getElementById("apiTest"); if(b) b.innerHTML=html; }
 function diagHTML(r){
   if(!r) return "";
-  if(r.ok) return '<div class="okbox">接続できました（'+esc(r.via)+'で確認）。<br>保存されているデータ：メンバー '+r.members+'人／予定 '+r.events+'件</div>';
+  if(r.ok) return '<div class="okbox">接続できました（'+esc(r.via)+'で確認）。<br>保存されているデータ：メンバー '+r.members+'人／予定 '+r.events+'件'+
+    (LAST_OK_URL ? '<br><span class="urllabel">このURLで保存します</span><br><span class="urlline">'+esc(LAST_OK_URL)+'</span>' : '')+'</div>';
   return '<div class="errbox">接続できませんでした。<br>GET方式：'+esc(r.getErr)+'<br>POST方式：'+esc(r.postErr)+
     (r.detail?'<br>返ってきた内容：'+esc(r.detail):'')+
     '<br><span style="font-weight:800">公開設定（アクセス：全員）と、URLが「…/exec」で終わっているかをご確認ください。</span></div>';
@@ -1344,7 +1356,7 @@ function renderSetup(){
     'これで、パソコン・スマホ・メンバー全員が<strong>同じデータ</strong>を見られます。</div></div>'+
     localSummaryHTML()+
     '<div class="field" style="margin-top:14px"><label>WebアプリのURL</label>'+
-    '<input type="text" id="fApi" value="'+esc(safeGet("liberty_api_base")||DEFAULT_API||"")+'" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off"></div>'+
+    '<input type="text" id="fApi" class="urlinput" value="'+esc(setupURLValue())+'" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>'+
     '<button class="btn-primary big" data-act="migrate-setup">既存データを共有保存先へ移行</button>'+
     '<div class="sub" style="text-align:center;margin:8px 0 0">この端末のデータを消さずに、スプレッドシートへコピーします。</div>'+
     '<button class="qbtn" style="margin-top:14px" data-act="test-api">接続を確認するだけ</button>'+
@@ -1355,29 +1367,69 @@ function renderSetup(){
     (cands.length>1 ? '<br>見つかったデータ：'+cands.length+'件（いちばん多いものを使います）' : '')+'</div>'+
     '<button class="qbtn" style="margin-top:12px" data-act="local-only">この端末だけで使う（非推奨）</button>';
 }
+/* 入力欄 → SETUP_URL → 保存済みURL の順で、いちばん新しい完全なURLを使う */
+function setupURLValue(){
+  if(SETUP_URL) return SETUP_URL;
+  var saved = safeGet("liberty_api_base"); if(saved) return saved;
+  return DEFAULT_API || "";
+}
+function cleanURL(v){
+  var t = String(v||"");
+  t = t.replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, "");
+  if(!t) return null;
+  t = t.replace(/^https?:\/\//i, function(m){ return "https://"; });
+  var m = t.match(/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_\-]+\/exec([?#].*)?$/);
+  return m ? t.replace(/[?#].*$/, "") : null;   /* /exec で終わるものだけ。?xxx は落とす */
+}
 function setupURL(){
-  var v=((document.getElementById("fApi")||{}).value||"").trim();
-  if(!/^https:\/\/script\.google\.com\/macros\/s\/[^\/?#]+\/exec/.test(v)){
-    apiTestBox('<div class="errbox">URLの形が正しくありません。「…/exec」で終わるURLを貼り付けてください。</div>');
+  var el = document.getElementById("fApi");
+  var raw = el ? el.value : "";
+  if(String(raw||"").trim()) SETUP_URL = String(raw).trim();
+  var v = cleanURL(raw || SETUP_URL || safeGet("liberty_api_base") || DEFAULT_API || "");
+  if(!v){
+    var shown = String(raw||"").trim();
+    apiTestBox('<div class="errbox">URLの形が正しくありません。<br>'+
+      (shown ? '入力されているのは：<span class="urlline">'+esc(shown)+'</span><br>' : '入力欄が空です。<br>')+
+      '「https://script.google.com/macros/s/…/exec」の形で貼り付けてください。</div>');
     return null;
   }
+  SETUP_URL = v;
   return v;
 }
 function runSetupTest(v, after){
+  SETUP_URL = v;
+  var box = document.getElementById("fApi"); if(box) box.value = v;
   apiTestBox('<div class="sub" style="margin-top:12px">接続を確認しています…（数秒かかります）</div>');
   var keep = API_BASE; API_BASE = v;
-  pingAPI(v).then(function(r){ API_BASE = keep; LAST_DIAG = r; apiTestBox(diagHTML(r)); if(after) after(!!r.ok, r); });
+  pingAPI(v).then(function(r){
+    API_BASE = keep; LAST_DIAG = r;
+    if(r.ok){
+      LAST_OK_URL = v;
+      apiTestBox(diagHTML(r)+
+        '<button class="btn-primary big" style="margin-top:12px" data-act="save-api">このURLを保存する</button>'+
+        '<div class="sub" style="text-align:center;margin-top:8px">押すと保存して、いまの共有データを読み込みます。</div>');
+    } else {
+      apiTestBox(diagHTML(r));
+    }
+    if(after) after(!!r.ok, r);
+  });
 }
 function saveApiBase(){
-  var v = setupURL(); if(!v) return;
-  safeSet("liberty_api_base", v); API_BASE = v; CONN_ERR = false; safeDel("liberty_transport");
-  MODE = "server"; state = normalizeState({ members:[], events:[], settings:{} });
-  render();                                  /* ← 押した瞬間に画面を切り替える */
-  apiTestBox('<div class="sub" style="margin-top:12px">接続を確認しています…（数秒かかります）</div>');
-  pingAPI(v).then(function(r){
-    LAST_DIAG = r;
-    if(r.ok){ loadState().then(function(){ render(); toast("保存先につながりました"); }); }
-    else { toast("つながりませんでした。URLをご確認ください"); }
+  var v = cleanURL(SETUP_URL || LAST_OK_URL || "") || setupURL();
+  if(!v){ toast("URLを入れてください"); return; }
+  SETUP_URL = v; LAST_OK_URL = v;
+  safeSet("liberty_api_base", v);          /* 完全なURLをそのまま保存 */
+  API_BASE = v; CONN_ERR = false; safeDel("liberty_transport");
+  MODE = "server";
+  var box = document.getElementById("fApi"); if(box) box.value = v;
+  loadState().then(function(okNow){        /* 保存後、すぐ共有データを読み込む */
+    render();
+    if(okNow){
+      toast("保存しました　メンバー"+state.members.length+"人・予定"+state.events.length+"件");
+      if(!me){ setTimeout(modalPickName, 400); }
+    } else {
+      toast("URLは保存しましたが、つながりませんでした");
+    }
   });
 }
 
@@ -1782,16 +1834,25 @@ function paintDots(buf){
 }
 
 /* ---------- 自動更新（共有データを最新に） ---------- */
+function onSetupGate(){ return !!document.querySelector('[data-act="migrate-setup"]'); }
 function startLive(){
   clearInterval(liveTimer);
   liveTimer = setInterval(function(){
     if(document.hidden) return;
     if(document.querySelector(".mask")) return;
+    if(onSetupGate()) return;                 /* 設定画面では自動更新しない（入力中のURLを消さない） */
     loadState().then(function(){ render(); });
   }, 20000);
 }
 document.addEventListener("visibilitychange", function(){
-  if(!document.hidden && !document.querySelector(".mask")){ loadState().then(function(){ render(); }); }
+  if(document.hidden || document.querySelector(".mask")) return;
+  if(onSetupGate()) return;
+  loadState().then(function(){ render(); });
+});
+/* 入力したURLを、描き直しのたびに覚えておく */
+document.addEventListener("input", function(e){
+  var t = e.target;
+  if(t && t.id === "fApi"){ SETUP_URL = String(t.value||"").trim(); }
 });
 
 /* ---------- 起動 ---------- */
